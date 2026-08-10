@@ -1,8 +1,10 @@
-﻿const ADMIN_NAME = "椰子饭";
+﻿import { SUPABASE_CONFIG } from "./supabase-config.js";
+const ADMIN_NAME = "椰子饭";
 const ADMIN_HASH = "$2a$10$M4BT179Phm0a8cV7dKuL4u7VxenUlb.Cxw3Vub84JFULNr7WHStAi";
 const NORMAL_PLAYERS = ["殳醋", "梦男哥", "幽灵鱼"];
 const STORAGE_PREFIX = "mini-guess:";
 const ADMIN_FAIL_KEY = `${STORAGE_PREFIX}admin-password-failed`;
+let supabaseClient = null;
 
 const ACHIEVEMENTS = [
   { id: "a1", title: "人才济济", description: "输入过指定群像字中的至少 3 个。" },
@@ -59,6 +61,8 @@ const state = {
   currentUser: null,
   currentMode: "normal",
   currentView: "game",
+  cloudReady: false,
+  cloudMessage: "",
 };
 
 init();
@@ -76,10 +80,12 @@ async function init() {
     state.personal = parsePersonal(personalText);
     state.hard = parseHard(hardText);
     state.tips = parseTips(tipText);
+    initCloudSync();
 
     const savedUser = localStorage.getItem(`${STORAGE_PREFIX}user`);
     if (savedUser && isKnownUser(savedUser)) {
       state.currentUser = savedUser;
+      await hydrateProgressForUser(savedUser);
       render();
       return;
     }
@@ -102,6 +108,124 @@ async function fetchText(path) {
     throw new Error(`${path} 读取失败：${response.status}`);
   }
   return response.text();
+}
+
+
+function initCloudSync() {
+  const hasConfig = Boolean(SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey && SUPABASE_CONFIG.table);
+  const hasSdk = Boolean(window.supabase?.createClient);
+
+  if (!hasConfig) {
+    state.cloudReady = false;
+    state.cloudMessage = "未配置 Supabase，当前使用本地进度。";
+    return;
+  }
+
+  if (!hasSdk) {
+    state.cloudReady = false;
+    state.cloudMessage = "Supabase SDK 未加载，当前使用本地进度。";
+    return;
+  }
+
+  supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+  state.cloudReady = true;
+  state.cloudMessage = "Supabase 已连接。";
+}
+
+async function hydrateProgressForUser(player) {
+  if (!state.cloudReady || !NORMAL_PLAYERS.includes(player)) return;
+
+  const remoteProgress = await fetchRemoteProgress(player);
+  if (remoteProgress) {
+    persistLocalProgress(player, remoteProgress);
+    return;
+  }
+
+  const localProgress = loadProgress(player);
+  await saveRemoteProgress(player, localProgress);
+}
+
+async function hydrateProgressForPlayers(players = NORMAL_PLAYERS) {
+  if (!state.cloudReady) return;
+
+  try {
+    const { data, error } = await supabaseClient
+      .from(SUPABASE_CONFIG.table)
+      .select("player_name, progress")
+      .in("player_name", players);
+
+    if (error) throw error;
+
+    for (const row of data || []) {
+      if (NORMAL_PLAYERS.includes(row.player_name) && row.progress) {
+        persistLocalProgress(row.player_name, row.progress);
+      }
+    }
+  } catch (error) {
+    state.cloudMessage = `云端同步失败：${error.message}`;
+  }
+}
+
+async function fetchRemoteProgress(player) {
+  try {
+    const { data, error } = await supabaseClient
+      .from(SUPABASE_CONFIG.table)
+      .select("progress")
+      .eq("player_name", player)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data?.progress || null;
+  } catch (error) {
+    state.cloudMessage = `云端读取失败：${error.message}`;
+    return null;
+  }
+}
+
+async function saveRemoteProgress(player, progress) {
+  if (!state.cloudReady || !NORMAL_PLAYERS.includes(player)) return;
+
+  try {
+    const { error } = await supabaseClient
+      .from(SUPABASE_CONFIG.table)
+      .upsert({
+        player_name: player,
+        progress,
+        updated_at: new Date().toISOString(),
+      });
+
+    if (error) throw error;
+  } catch (error) {
+    state.cloudMessage = `云端保存失败：${error.message}`;
+  }
+}
+
+async function deleteRemoteProgress(player) {
+  if (!state.cloudReady || !NORMAL_PLAYERS.includes(player)) return;
+
+  try {
+    const { error } = await supabaseClient
+      .from(SUPABASE_CONFIG.table)
+      .delete()
+      .eq("player_name", player);
+
+    if (error) throw error;
+  } catch (error) {
+    state.cloudMessage = `云端删除失败：${error.message}`;
+  }
+}
+
+function persistLocalProgress(player, progress) {
+  localStorage.setItem(`${STORAGE_PREFIX}progress:${player}`, JSON.stringify(progress));
+}
+
+function renderLoadingPanel(message) {
+  app.innerHTML = `
+    <section class="loading-panel">
+      <h1>迷你猜词游戏</h1>
+      <p>${escapeHtml(message)}</p>
+    </section>
+  `;
 }
 
 function parsePhrases(text) {
@@ -245,7 +369,7 @@ function renderLogin() {
       }
     }
 
-    login(name);
+    await login(name);
   });
 }
 
@@ -253,10 +377,11 @@ function isKnownUser(name) {
   return name === ADMIN_NAME || NORMAL_PLAYERS.includes(name);
 }
 
-function login(name) {
+async function login(name) {
   state.currentUser = name;
   state.currentView = "game";
   localStorage.setItem(`${STORAGE_PREFIX}user`, name);
+  await hydrateProgressForUser(name);
 
   if (NORMAL_PLAYERS.includes(name) && localStorage.getItem(ADMIN_FAIL_KEY) === "1") {
     const progress = loadProgress(name);
@@ -567,7 +692,7 @@ function getStats(questions, modeProgress) {
   };
 }
 
-function openAchievementsBoard() {
+async function openAchievementsBoard() {
   if (NORMAL_PLAYERS.includes(state.currentUser)) {
     const progress = loadProgress(state.currentUser);
     unlockAchievement(progress, "a25");
@@ -575,24 +700,26 @@ function openAchievementsBoard() {
   }
 
   state.currentView = "achievements";
+  renderLoadingPanel("正在同步成就榜...");
+  await hydrateProgressForPlayers();
   renderAchievementsBoard();
 }
 
 function renderAchievementsBoard() {
   const cards = NORMAL_PLAYERS.map((player) => {
     const progress = loadProgress(player);
-    const unlockedCount = Object.keys(progress.achievements).length;
+    const unlocked = ACHIEVEMENTS.filter((achievement) => progress.achievements[achievement.id]);
     const badge = getFanBadge(progress);
 
     return `
       <article class="achievement-player-card ${player === state.currentUser ? "current" : ""}">
         <div class="achievement-player-head">
           <h2>${escapeHtml(player)}</h2>
-          <span>${unlockedCount} / ${ACHIEVEMENTS.length}</span>
+          <span>${unlocked.length} / ${ACHIEVEMENTS.length}</span>
         </div>
         ${badge ? `<p class="fan-badge compact">粉籍：${escapeHtml(badge)}</p>` : ""}
         <div class="achievement-list">
-          ${ACHIEVEMENTS.map((achievement) => renderAchievementItem(achievement, progress)).join("")}
+          ${unlocked.length ? unlocked.map((achievement) => renderAchievementItem(achievement, progress)).join("") : `<p class="empty-achievements">暂时还没有达成成就。</p>`}
         </div>
       </article>
     `;
@@ -602,7 +729,7 @@ function renderAchievementsBoard() {
     <header class="game-header">
       <div>
         <h1>成就榜</h1>
-        <p class="subtle">这里展示当前浏览器中保存过的玩家成就。</p>
+        <p class="subtle">${state.cloudReady ? "成就榜已尝试从 Supabase 同步。" : "当前使用本地成就榜。"}</p>
       </div>
       <div class="top-actions">
         <button class="ghost-button" id="back-button">返回</button>
@@ -620,16 +747,15 @@ function renderAchievementsBoard() {
 }
 
 function renderAchievementItem(achievement, progress) {
-  const unlockedAt = progress.achievements[achievement.id];
-  const extra = achievement.id === "a11" && getFanBadge(progress) ? `你的粉籍：${escapeHtml(getFanBadge(progress))}` : achievement.description;
+  const extra = achievement.id === "a11" && getFanBadge(progress) ? `<p>你的粉籍：${escapeHtml(getFanBadge(progress))}</p>` : "";
 
   return `
-    <div class="achievement-item ${unlockedAt ? "unlocked" : "locked"}">
+    <div class="achievement-item unlocked compact-achievement">
       <div>
         <strong>${escapeHtml(achievement.title)}</strong>
-        <p>${escapeHtml(extra)}</p>
+        ${extra}
       </div>
-      <span>${unlockedAt ? "已达成" : "未达成"}</span>
+      <span>已达成</span>
     </div>
   `;
 }
@@ -755,7 +881,9 @@ function loadProgress(player) {
 }
 
 function saveProgress(player, progress) {
-  localStorage.setItem(`${STORAGE_PREFIX}progress:${player}`, JSON.stringify(progress));
+  progress.updatedAt = new Date().toISOString();
+  persistLocalProgress(player, progress);
+  void saveRemoteProgress(player, progress);
 }
 
 function saveMessage(progress, message, type) {
@@ -812,13 +940,14 @@ function renderAdmin() {
   });
 }
 
-function resetPlayerProgress(player) {
+async function resetPlayerProgress(player) {
   if (!NORMAL_PLAYERS.includes(player)) return;
 
   const confirmed = window.confirm(`确定要清空 ${player} 的当前答题进度吗？`);
   if (!confirmed) return;
 
   localStorage.removeItem(`${STORAGE_PREFIX}progress:${player}`);
+  await deleteRemoteProgress(player);
   renderAdmin();
 }
 
@@ -842,4 +971,14 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
+
+
+
+
+
+
+
+
+
 

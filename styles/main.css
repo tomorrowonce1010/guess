@@ -651,3 +651,16 @@ input:focus {
     display: grid;
   }
 }
+
+.empty-achievements {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  background: #f8f4ed;
+}
+
+.compact-achievement {
+  min-height: 48px;
+}
