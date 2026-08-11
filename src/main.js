@@ -719,7 +719,7 @@ function renderAchievementsBoard() {
         </div>
         ${badge ? `<p class="fan-badge compact">粉籍：${escapeHtml(badge)}</p>` : ""}
         <div class="achievement-list">
-          ${unlocked.length ? unlocked.map((achievement) => renderAchievementItem(achievement, progress)).join("") : `<p class="empty-achievements">暂时还没有达成成就。</p>`}
+          ${unlocked.length ? unlocked.map((achievement) => renderAchievementItem(achievement, progress, player === state.currentUser)).join("") : `<p class="empty-achievements">暂时还没有达成成就。</p>`}
         </div>
       </article>
     `;
@@ -746,14 +746,15 @@ function renderAchievementsBoard() {
   document.querySelector("#logout-button").addEventListener("click", logout);
 }
 
-function renderAchievementItem(achievement, progress) {
-  const extra = achievement.id === "a11" && getFanBadge(progress) ? `<p>你的粉籍：${escapeHtml(getFanBadge(progress))}</p>` : "";
+function renderAchievementItem(achievement, progress, canShowDescription) {
+  const fanText = achievement.id === "a11" && getFanBadge(progress) ? `你的粉籍：${escapeHtml(getFanBadge(progress))}` : "";
+  const detail = canShowDescription ? `<p>${escapeHtml(achievement.description)}${fanText ? `<br />${fanText}` : ""}</p>` : "";
 
   return `
     <div class="achievement-item unlocked compact-achievement">
       <div>
         <strong>${escapeHtml(achievement.title)}</strong>
-        ${extra}
+        ${detail}
       </div>
       <span>已达成</span>
     </div>
@@ -971,6 +972,7 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
 
 
 
