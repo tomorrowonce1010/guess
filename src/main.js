@@ -1,7 +1,8 @@
 ﻿import { SUPABASE_CONFIG } from "./supabase-config.js";
 const ADMIN_NAME = "椰子饭";
 const ADMIN_HASH = "$2a$10$M4BT179Phm0a8cV7dKuL4u7VxenUlb.Cxw3Vub84JFULNr7WHStAi";
-const NORMAL_PLAYERS = ["殳醋", "梦男哥", "幽灵鱼"];
+const NORMAL_PLAYERS = ["殳醋", "梦男哥", "幽灵鱼", "玻璃频"];
+const PLAYER_NAMES = [ADMIN_NAME, ...NORMAL_PLAYERS];
 const STORAGE_PREFIX = "mini-guess:";
 const ADMIN_FAIL_KEY = `${STORAGE_PREFIX}admin-password-failed`;
 let supabaseClient = null;
@@ -69,22 +70,27 @@ init();
 
 async function init() {
   try {
-    const [phrasesText, personalText, hardText, tipText] = await Promise.all([
+    const [phrasesText, personalText, hardText, tipText, adminPhrasesText, adminTipText] = await Promise.all([
       fetchText("questions/phrases.txt"),
       fetchText("questions/personal.txt"),
       fetchText("questions/phrases-hard.txt"),
       fetchText("questions/tip.txt"),
+      fetchOptionalText("questions/yezifan-phrases.txt"),
+      fetchOptionalText("questions/yezifan-tip.txt"),
     ]);
 
     state.questions = parsePhrases(phrasesText);
     state.personal = parsePersonal(personalText);
     state.hard = parseHard(hardText);
     state.tips = parseTips(tipText);
+    state.adminQuestions = adminPhrasesText ? parsePhrases(adminPhrasesText, "yezifan-phrases.txt") : [];
+    state.adminTips = adminTipText ? parseTips(adminTipText, "yezifan-tip.txt") : {};
     initCloudSync();
 
     const savedUser = localStorage.getItem(`${STORAGE_PREFIX}user`);
     if (savedUser && isKnownUser(savedUser)) {
       state.currentUser = savedUser;
+      state.currentView = savedUser === ADMIN_NAME ? "admin" : "game";
       await hydrateProgressForUser(savedUser);
       render();
       return;
@@ -111,6 +117,16 @@ async function fetchText(path) {
 }
 
 
+async function fetchOptionalText(path) {
+  const response = await fetch(path, { cache: "no-store" });
+  if (response.status === 404) {
+    return "";
+  }
+  if (!response.ok) {
+    throw new Error(`${path} 读取失败：${response.status}`);
+  }
+  return response.text();
+}
 function initCloudSync() {
   const hasConfig = Boolean(SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey && SUPABASE_CONFIG.table);
   const hasSdk = Boolean(window.supabase?.createClient);
@@ -133,7 +149,7 @@ function initCloudSync() {
 }
 
 async function hydrateProgressForUser(player) {
-  if (!state.cloudReady || !NORMAL_PLAYERS.includes(player)) return;
+  if (!state.cloudReady || !PLAYER_NAMES.includes(player)) return;
 
   const remoteProgress = await fetchRemoteProgress(player);
   if (remoteProgress) {
@@ -145,7 +161,7 @@ async function hydrateProgressForUser(player) {
   await saveRemoteProgress(player, localProgress);
 }
 
-async function hydrateProgressForPlayers(players = NORMAL_PLAYERS) {
+async function hydrateProgressForPlayers(players = PLAYER_NAMES) {
   if (!state.cloudReady) return;
 
   try {
@@ -157,7 +173,7 @@ async function hydrateProgressForPlayers(players = NORMAL_PLAYERS) {
     if (error) throw error;
 
     for (const row of data || []) {
-      if (NORMAL_PLAYERS.includes(row.player_name) && row.progress) {
+      if (PLAYER_NAMES.includes(row.player_name) && row.progress) {
         persistLocalProgress(row.player_name, row.progress);
       }
     }
@@ -183,7 +199,7 @@ async function fetchRemoteProgress(player) {
 }
 
 async function saveRemoteProgress(player, progress) {
-  if (!state.cloudReady || !NORMAL_PLAYERS.includes(player)) return;
+  if (!state.cloudReady || !PLAYER_NAMES.includes(player)) return;
 
   try {
     const { error } = await supabaseClient
@@ -201,7 +217,7 @@ async function saveRemoteProgress(player, progress) {
 }
 
 async function deleteRemoteProgress(player) {
-  if (!state.cloudReady || !NORMAL_PLAYERS.includes(player)) return;
+  if (!state.cloudReady || !PLAYER_NAMES.includes(player)) return;
 
   try {
     const { error } = await supabaseClient
@@ -228,7 +244,7 @@ function renderLoadingPanel(message) {
   `;
 }
 
-function parsePhrases(text) {
+function parsePhrases(text, sourceName = "phrases.txt") {
   return text
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -236,7 +252,7 @@ function parsePhrases(text) {
     .map((line) => {
       const match = line.match(/^(\d+)\s+(.+)$/u);
       if (!match) {
-        throw new Error(`phrases.txt 格式错误：${line}`);
+        throw new Error(`${sourceName} 格式错误：${line}`);
       }
       return {
         id: Number(match[1]),
@@ -253,7 +269,7 @@ function parsePersonal(text) {
     const line = rawLine.trim();
     if (!line) continue;
 
-    if (NORMAL_PLAYERS.includes(line)) {
+    if (PLAYER_NAMES.includes(line)) {
       currentPlayer = line;
       result[currentPlayer] = [];
       continue;
@@ -307,7 +323,7 @@ function render() {
     return;
   }
 
-  if (state.currentUser === ADMIN_NAME) {
+  if (state.currentUser === ADMIN_NAME && state.currentView === "admin") {
     renderAdmin();
     return;
   }
@@ -323,7 +339,7 @@ function renderLogin() {
       <form id="login-form">
         <div class="form-row">
           <label for="name">名字</label>
-          <input id="name" autocomplete="username" placeholder="殳醋 / 梦男哥 / 幽灵鱼 / 椰子饭" />
+          <input id="name" autocomplete="username" placeholder="殳醋 / 梦男哥 / 幽灵鱼 / 玻璃频 / 椰子饭" />
         </div>
         <div class="form-row" id="password-row" hidden>
           <label for="password">管理员密码</label>
@@ -374,19 +390,19 @@ function renderLogin() {
 }
 
 function isKnownUser(name) {
-  return name === ADMIN_NAME || NORMAL_PLAYERS.includes(name);
+  return PLAYER_NAMES.includes(name);
 }
 
 async function login(name) {
   state.currentUser = name;
-  state.currentView = "game";
+  state.currentView = name === ADMIN_NAME ? "admin" : "game";
   localStorage.setItem(`${STORAGE_PREFIX}user`, name);
   await hydrateProgressForUser(name);
 
   if (NORMAL_PLAYERS.includes(name) && localStorage.getItem(ADMIN_FAIL_KEY) === "1") {
     const progress = loadProgress(name);
     unlockAchievement(progress, "a6");
-    saveProgress(name, progress);
+    await saveProgress(name, progress);
     localStorage.removeItem(ADMIN_FAIL_KEY);
   }
 
@@ -421,6 +437,7 @@ function renderGame() {
       </div>
       <div class="top-actions">
         <button class="ghost-button" id="achievement-board-button">成就榜</button>
+        ${state.currentUser === ADMIN_NAME ? `<button class="ghost-button" id="admin-panel-button">管理员面板</button>` : ""}
         <button class="ghost-button" id="logout-button">退出登录</button>
       </div>
     </header>
@@ -442,7 +459,7 @@ function renderGame() {
         <div class="question-list">
           ${activeQuestions.map((question, index) => renderQuestion(question, index, progress[state.currentMode])).join("")}
         </div>
-        ${stats.done === stats.total ? `<p class="win-banner">全部猜完了，你获胜了。</p>` : ""}
+        ${stats.total > 0 && stats.done === stats.total ? `<p class="win-banner">全部猜完了，你获胜了。</p>` : ""}
       </div>
 
       <aside class="side-panel">
@@ -459,6 +476,10 @@ function renderGame() {
   `;
 
   document.querySelector("#achievement-board-button").addEventListener("click", openAchievementsBoard);
+  document.querySelector("#admin-panel-button")?.addEventListener("click", () => {
+    state.currentView = "admin";
+    renderAdmin();
+  });
   document.querySelector("#logout-button").addEventListener("click", logout);
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => {
@@ -491,7 +512,7 @@ function renderGame() {
 function renderQuestion(question, index, modeProgress) {
   const chars = Array.from(question.answer);
   const solved = modeProgress.solved.includes(String(question.id));
-  const tip = state.currentMode === "normal" ? state.tips[question.id] : "";
+  const tip = state.currentMode === "normal" ? getPlayerTips(state.currentUser)[question.id] : "";
   const tipVisible = tip && modeProgress.openTips.includes(String(question.id));
 
   return `
@@ -679,7 +700,12 @@ function markSolvedQuestions(questions, modeProgress) {
 
 function getPlayerQuestions(player) {
   const ids = new Set(state.personal[player] || []);
-  return state.questions.filter((question) => ids.has(question.id));
+  const source = player === ADMIN_NAME ? state.adminQuestions : state.questions;
+  return source.filter((question) => ids.has(question.id));
+}
+
+function getPlayerTips(player) {
+  return player === ADMIN_NAME ? state.adminTips : state.tips;
 }
 
 function getStats(questions, modeProgress) {
@@ -693,10 +719,10 @@ function getStats(questions, modeProgress) {
 }
 
 async function openAchievementsBoard() {
-  if (NORMAL_PLAYERS.includes(state.currentUser)) {
+  if (PLAYER_NAMES.includes(state.currentUser)) {
     const progress = loadProgress(state.currentUser);
     unlockAchievement(progress, "a25");
-    saveProgress(state.currentUser, progress);
+    await saveProgress(state.currentUser, progress);
   }
 
   state.currentView = "achievements";
@@ -706,7 +732,7 @@ async function openAchievementsBoard() {
 }
 
 function renderAchievementsBoard() {
-  const cards = NORMAL_PLAYERS.map((player) => {
+  const cards = PLAYER_NAMES.map((player) => {
     const progress = loadProgress(player);
     const unlocked = ACHIEVEMENTS.filter((achievement) => progress.achievements[achievement.id]);
     const badge = getFanBadge(progress);
@@ -884,7 +910,7 @@ function loadProgress(player) {
 function saveProgress(player, progress) {
   progress.updatedAt = new Date().toISOString();
   persistLocalProgress(player, progress);
-  void saveRemoteProgress(player, progress);
+  return saveRemoteProgress(player, progress);
 }
 
 function saveMessage(progress, message, type) {
@@ -895,7 +921,7 @@ function saveMessage(progress, message, type) {
 }
 
 function renderAdmin() {
-  const cards = NORMAL_PLAYERS.map((player) => {
+  const cards = PLAYER_NAMES.map((player) => {
     const progress = loadProgress(player);
     const normalQuestions = getPlayerQuestions(player);
     const normalStats = getStats(normalQuestions, progress.normal);
@@ -926,6 +952,7 @@ function renderAdmin() {
       </div>
       <div class="top-actions">
         <button class="ghost-button" id="achievement-board-button">成就榜</button>
+        <button class="ghost-button" id="admin-game-button">我的答题区</button>
         <button class="ghost-button" id="logout-button">退出登录</button>
       </div>
     </header>
@@ -933,6 +960,10 @@ function renderAdmin() {
   `;
 
   document.querySelector("#achievement-board-button").addEventListener("click", openAchievementsBoard);
+  document.querySelector("#admin-game-button").addEventListener("click", () => {
+    state.currentView = "game";
+    renderGame();
+  });
   document.querySelector("#logout-button").addEventListener("click", logout);
   document.querySelectorAll(".reset-progress-button").forEach((button) => {
     button.addEventListener("click", () => {
@@ -942,7 +973,7 @@ function renderAdmin() {
 }
 
 async function resetPlayerProgress(player) {
-  if (!NORMAL_PLAYERS.includes(player)) return;
+  if (!PLAYER_NAMES.includes(player)) return;
 
   const confirmed = window.confirm(`确定要清空 ${player} 的当前答题进度吗？`);
   if (!confirmed) return;
@@ -972,8 +1003,6 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
-
-
 
 
 
